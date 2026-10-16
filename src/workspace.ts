@@ -4,7 +4,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { OPENCODE_VERSION, SERVER_BINARY, SERVER_PORT, WORKSPACE, optionsSchema, remoteEnvironment } from "./config.js";
 import { checkedCommand, sourceBundle } from "./git.js";
 import { resolveCredentials } from "./auth.js";
-import { passwordFor, sandboxName } from "./state.js";
+import { brokerScope, gatewayKey, gatewayModel, gatewayPolicy } from "./broker.js";
+import { brokerState, passwordFor, sandboxName, stateDirectory, withWorkspaceLock } from "./state.js";
 
 export function authorization(password: string) {
   return { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` };
@@ -41,8 +42,21 @@ export async function ensureServer(sandbox: Sandbox, password: string) {
   throw new Error(`OpenCode did not become healthy in ${sandbox.name}; the sandbox and logs are preserved.`);
 }
 
-export function createAdapter(context: Pick<PluginInput, "directory">, rawOptions: unknown = {}, service = Sandbox): WorkspaceAdapter {
+export type WorkspaceDependencies = {
+  host?: NodeJS.ProcessEnv;
+  readAuth?: () => Promise<string>;
+  credentials?: typeof resolveCredentials;
+  source?: typeof sourceBundle;
+  ready?: typeof ensureServer;
+  stateDirectory?: string;
+};
+
+export function createAdapter(context: Pick<PluginInput, "directory">, rawOptions: unknown = {}, service: Pick<typeof Sandbox, "create" | "get"> = Sandbox, dependencies: WorkspaceDependencies = {}): WorkspaceAdapter {
   const options = optionsSchema.parse(rawOptions);
+  const host = dependencies.host ?? process.env;
+  const directory = dependencies.stateDirectory ?? stateDirectory();
+  const credentialsFor = () => (dependencies.credentials ?? resolveCredentials)(context.directory, options.project);
+  const ready = dependencies.ready ?? ensureServer;
   const pending = new Map<string, Promise<WorkspaceTarget>>();
   const nameFor = (config: WorkspaceInfo) => sandboxName(config.projectID, config.id);
 
@@ -54,18 +68,24 @@ export function createAdapter(context: Pick<PluginInput, "directory">, rawOption
     },
     async create(config, inherited, from) {
       if (from) throw new Error("Forking existing workspaces is not supported; create a new workspace from local HEAD.");
-      const source = await sourceBundle(context.directory);
-      const credentials = await resolveCredentials(context.directory, options.project);
+      const model = gatewayModel(options.remoteConfig.model);
+      const key = await gatewayKey(inherited, host, dependencies.readAuth);
+      const source = await (dependencies.source ?? sourceBundle)(context.directory);
+      const credentials = await credentialsFor();
+      const scope = brokerScope(credentials, host);
       const name = nameFor(config);
-      const password = await passwordFor(name, true);
-      const env = remoteEnvironment(options, inherited, process.env);
-      const sandbox = await service.create({
+      await withWorkspaceLock(name, directory, async () => {
+      const password = await passwordFor(name, true, directory);
+      const env = remoteEnvironment(options, config.id);
+      let sandbox: Sandbox;
+      try { sandbox = await service.create({
         ...credentials, name, image: options.image, region: options.region,
         persistent: true, timeout: options.timeoutMs, resources: { vcpus: options.vcpus },
         snapshotExpiration: 0, keepLastSnapshots: { count: 1 },
         ports: [SERVER_PORT, ...new Set(options.previewPorts)],
+        networkPolicy: gatewayPolicy(key, model),
         env: { ...env, OPENCODE_SERVER_PASSWORD: password },
-      });
+      }); } catch { throw new Error("Brokered workspace creation failed. Inspect the Sandbox dashboard before retrying; credentials are omitted from this error."); }
       await sandbox.writeFiles([
         { path: "/vercel/sandbox/source.bundle", content: source.content },
         { path: "/vercel/sandbox/source-head", content: Buffer.from(source.head) },
@@ -74,10 +94,12 @@ export function createAdapter(context: Pick<PluginInput, "directory">, rawOption
       await checkedCommand(sandbox, "git", ["checkout", "-B", "workspace", source.head]);
       await checkedCommand(sandbox, "git", ["remote", "remove", "origin"]);
       await checkedCommand(sandbox, "npm", ["install", "--prefix", "/vercel/sandbox/opencode", "--no-audit", "--no-fund", `opencode-ai@${OPENCODE_VERSION}`], "/vercel/sandbox");
-      await ensureServer(sandbox, password);
+      await ready(sandbox, password);
+      await brokerState(name, model, scope, true, directory);
+      });
     },
     async remove(config) {
-      const credentials = await resolveCredentials(context.directory, options.project);
+      const credentials = await credentialsFor();
       const sandbox = await service.get({ ...credentials, name: nameFor(config), resume: false });
       await sandbox.stop();
     },
@@ -85,13 +107,21 @@ export function createAdapter(context: Pick<PluginInput, "directory">, rawOption
       const name = nameFor(config);
       const existing = pending.get(name);
       if (existing) return existing;
-      const operation = (async (): Promise<WorkspaceTarget> => {
-        const password = await passwordFor(name, false);
-        const credentials = await resolveCredentials(context.directory, options.project);
-        const sandbox = await service.get({ ...credentials, name });
-        const url = await ensureServer(sandbox, password);
+      const operation = withWorkspaceLock(name, directory, async (): Promise<WorkspaceTarget> => {
+        const model = gatewayModel(options.remoteConfig.model);
+        const credentials = await credentialsFor();
+        await brokerState(name, model, brokerScope(credentials, host), false, directory);
+        const key = await gatewayKey(undefined, host, dependencies.readAuth);
+        const password = await passwordFor(name, false, directory);
+        let sandbox: Sandbox;
+        try {
+          sandbox = await service.get({ ...credentials, name, resume: false });
+          await sandbox.update({ networkPolicy: gatewayPolicy(key, model) });
+          sandbox = await service.get({ ...credentials, name, resume: true });
+        } catch { throw new Error("Workspace policy refresh or resume failed. No connection was returned; inspect the Sandbox before retrying."); }
+        const url = await ready(sandbox, password);
         return { type: "remote", url, headers: authorization(password) };
-      })();
+      });
       pending.set(name, operation);
       try { return await operation; }
       finally { pending.delete(name); }

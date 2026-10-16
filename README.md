@@ -9,10 +9,12 @@ Run OpenCode's supported shell and file tools in a Vercel Sandbox while keeping 
 | Mode | What runs in the Sandbox | How it starts |
 | --- | --- | --- |
 | Automatic tools | Supported agent shell and file tools | First supported tool call, with `mode: "automatic"` |
-| [Remote workspace](docs/workspace.md) | OpenCode server, model access and agent tools | Select Vercel Sandbox with `/warp` |
+| [Remote workspace](docs/workspace.md) | OpenCode server, Gateway model access and agent tools | Configure a Gateway model, then select Vercel Sandbox with `/warp` |
 | [Standalone terminal](docs/terminal.md) | The whole OpenCode session | Create and connect through Vercel CLI, without this plugin |
 
 Both plugin modes are in this package. Use only one mode per OpenCode instance. Omitting `mode` selects the workspace behavior, not automatic mode.
+
+Workspace mode brokers an AI Gateway API key through the Sandbox firewall instead of copying provider credentials into the VM. It requires a fresh workspace and a configured Gateway model. OAuth, subscription logins, and credential-forwarding options are not supported. Code can still make billable model requests. See the [workspace setup and migration notes](docs/workspace.md).
 
 ## Try automatic mode from source
 

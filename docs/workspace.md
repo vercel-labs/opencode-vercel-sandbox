@@ -2,7 +2,9 @@
 
 This mode runs the OpenCode server and agent inside a persistent Vercel Sandbox. Select it explicitly with `/warp`. It is separate from [automatic tools](../README.md), where OpenCode and model authentication stay local.
 
-**Credential warning:** OpenCode forwards all saved provider credentials into the remote workspace. Use a dedicated profile containing only credentials you are willing to expose to code in that VM.
+Workspace mode supports **AI Gateway API keys only**. The plugin keeps the real provider key outside the VM and gives it to the Sandbox firewall, which adds it to matching Gateway model requests. The remote OpenCode configuration contains a non-secret placeholder. Automatic mode keeps model authentication local as before.
+
+Code in the VM can still make billable requests through the broker. This protects the key, not your model budget. The separate OpenCode server password and any secrets you commit to Git are outside this provider-key boundary.
 
 This unreleased preview supports OpenCode **1.18.32** and Sandbox SDK **3.5.0**.
 
@@ -63,20 +65,22 @@ vercel link
 
 The plugin uses your existing Vercel CLI login and the repository's `.vercel/project.json`. Expired login tokens are refreshed through the official CLI. If login or project linking is missing, it gives instructions instead of opening an interactive login inside OpenCode or choosing a billing project for you. Keep `.vercel/` out of Git.
 
-Configure your model provider using OpenCode's `/connect`. OpenCode forwards **all saved provider credentials** into the remote workspace, not just those for the currently selected model. Code inside the VM can access them, and they remain in its retained filesystem. Use an OpenCode profile containing only credentials you are willing to share with that workspace. If you use model credentials from your shell instead, explicitly list the variable names in the plugin options. For example, change the existing global plugin entry to this tuple, keeping its actual local package path:
+In your local OpenCode profile, use `/connect` to save a Vercel AI Gateway API key. Alternatively, set `AI_GATEWAY_API_KEY` in the shell that launches OpenCode. Keep the same source available when reconnecting. If both sources contain API keys, their keys must match. An explicit host API key works alongside a saved non-API login, which is ignored. The plugin doesn't execute Keychain lookup commands from provider configuration; use one of these two sources.
+
+Choose one Gateway model in the plugin options, keeping the actual local package path:
 
 ```json
 {
   "plugin": [
     [
       "/absolute/path/to/opencode-vercel-sandbox",
-      { "forwardEnv": ["AI_GATEWAY_API_KEY"] }
+      { "remoteConfig": { "model": "vercel/openai/gpt-5.4-mini" } }
     ]
   ]
 }
 ```
 
-Do not put secret values in that file. `forwardEnv` restricts forwarded shell variables; it does not filter OpenCode's saved provider credentials. Vercel Sandbox management credentials stay on your laptop.
+Do not put keys in that file. `forwardEnv`, arbitrary provider configuration, OAuth, and subscription logins are not supported in workspace mode. Other saved provider credentials are ignored. The remote provider list contains only Vercel AI Gateway, and the firewall authenticates requests for the configured model only. A different model requires a new workspace. Vercel Sandbox management credentials stay on your laptop.
 
 For automation, the original environment authentication remains supported: a current `VERCEL_OIDC_TOKEN`, or all three of `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID`. Explicit environment authentication takes precedence over local login. This plugin does not load `.env.local` automatically.
 
@@ -92,7 +96,9 @@ In OpenCode, enter `/warp`, then select **Vercel Sandbox** under **New workspace
 
 Files and commands run under `/vercel/sandbox/project`. Your local staged, unstaged and untracked changes are not uploaded or overwritten. Review committed history for sensitive data before creating a workspace. Select the workspace before sending your coding request; starting OpenCode alone is still local.
 
-Each workspace has one persistent Sandbox. Resume the existing OpenCode session to reconnect rather than choosing another **New workspace**. Files and conversation history persist across a VM stop; running processes do not. Reconnection starts the OpenCode server again. Project OpenCode configuration is disabled remotely to prevent recursively loading laptop-only plugins; use `remoteConfig` for remote model/provider settings.
+Each workspace has one persistent Sandbox. Resume the existing OpenCode session to reconnect rather than choosing another **New workspace**. Files and conversation history persist across a VM stop; running processes do not. Reconnection refreshes the firewall policy before resuming the VM and starting the OpenCode server. Missing keys or a failed policy update prevent a connection. Project OpenCode configuration is disabled remotely to prevent recursively loading laptop-only plugins.
+
+Workspaces created before credential brokering are refused. Their files and snapshots may still contain copied credentials. Create a fresh workspace; export anything needed from the old one, then decide whether to revoke its keys and delete its retained data. Upgrading the plugin does not clean old snapshots. Never copy an old snapshot into a new brokered workspace.
 
 ## Export and stop
 
@@ -134,10 +140,11 @@ Default session timeout is 30 minutes. This plugin explicitly sets `snapshotExpi
 | `timeoutMs` | `1800000` | Session duration, from 1 to 45 minutes |
 | `vcpus` | `2` | 1, 2 or 4 vCPUs, subject to plan limits |
 | `previewPorts` | `[]` | Additional exposed ports; 4096 is reserved for authenticated OpenCode |
-| `forwardEnv` | `[]` | Explicit model-provider environment variables to forward |
-| `remoteConfig` | `{}` | Remote OpenCode `model` and `provider` settings |
+| `remoteConfig.model` | Required before activation | One `vercel/<provider>/<model>` model; other remote provider settings are rejected |
 
-Network egress uses Sandbox's default allow-all policy for installs and model access. Additional preview ports are public; protect any application you expose. OpenCode's server requires a generated password. Private connection keys live in `$XDG_DATA_HOME/opencode/vercel-sandbox`, defaulting to `~/.local/share/opencode/vercel-sandbox`. Preserve them for reconnection; never share or commit them. Missing keys fail closed instead of replacing the VM.
+Network egress remains open for developer tools. A firewall rule adds the Gateway key only to `POST /v3/ai/language-model` on `ai-gateway.vercel.sh` for the configured model and pins its `Host` header. Other requests receive no injected key; they are not blocked by this rule. TLS verification remains enabled. See [credential brokering](https://vercel.com/docs/sandbox/concepts/firewall#credentials-brokering).
+
+Additional preview ports are public; protect any application you expose. OpenCode's server requires a generated password. Private connection keys and non-secret broker records live in `$XDG_DATA_HOME/opencode/vercel-sandbox`, defaulting to `~/.local/share/opencode/vercel-sandbox`. Preserve them for reconnection; never share or commit them. Missing records fail closed instead of replacing the VM. An activation lock serializes workspace operations; inspect stale locks rather than deleting them blindly.
 
 ## HTTP clients
 

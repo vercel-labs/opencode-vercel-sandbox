@@ -31,16 +31,17 @@ test("configuration rejects control-plane credentials and invalid resource optio
   }
 });
 
-test("remote environment forwards all saved provider auth and only selected host variables", () => {
-  const options = optionsSchema.parse({ forwardEnv: ["AI_GATEWAY_API_KEY"] });
-  const savedAuth = JSON.stringify({ first: { type: "api", key: "first-test-key" }, second: { type: "api", key: "second-test-key" } });
-  const env = remoteEnvironment(options, { OPENCODE_AUTH_CONTENT: savedAuth, VERCEL_TOKEN: "private", UNRELATED: "private" }, { AI_GATEWAY_API_KEY: "model-key", VERCEL_TOKEN: "private" });
-  assert.equal(env.AI_GATEWAY_API_KEY, "model-key");
-  assert.equal(env.OPENCODE_AUTH_CONTENT, savedAuth);
+test("remote environment contains only placeholder Gateway credentials", () => {
+  const options = optionsSchema.parse({ remoteConfig: { model: "vercel/openai/gpt-5.4-mini" } });
+  const env = remoteEnvironment(options, "wrk_example");
+  assert.equal("AI_GATEWAY_API_KEY" in env, false);
+  assert.equal(JSON.parse(env.OPENCODE_AUTH_CONTENT).vercel.key, "vercel-sandbox-broker-placeholder");
   assert.equal(env.OPENCODE_DISABLE_PROJECT_CONFIG, "true");
   assert.equal("VERCEL_TOKEN" in env, false);
   assert.equal("UNRELATED" in env, false);
-  assert.throws(() => remoteEnvironment(options, {}, {}), /Missing model environment/);
+  assert.throws(() => optionsSchema.parse({ forwardEnv: [] }));
+  assert.throws(() => optionsSchema.parse({ remoteConfig: { provider: {} } }));
+  assert.throws(() => remoteEnvironment(optionsSchema.parse({}), "wrk_example"), /remoteConfig.model/);
 });
 
 test("access token requires complete scope and OIDC takes precedence", () => {

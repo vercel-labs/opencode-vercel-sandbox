@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GATEWAY_PLACEHOLDER, gatewayModel } from "./broker.js";
 
 export const OPENCODE_VERSION = "1.18.32";
 export const WORKSPACE = "/vercel/sandbox/project";
@@ -10,12 +11,6 @@ export const projectSchema = z.object({
   projectId: z.string().min(1),
 }).strict();
 
-const forwardedName = z.string().regex(/^[A-Z][A-Z0-9_]*$/).refine(
-  (name) => !/^(VERCEL_|OPENCODE_|NODE_|BUN_|LD_|DYLD_|GIT_|XDG_)/.test(name) &&
-    !["PATH", "HOME", "SHELL", "ENV", "BASH_ENV"].includes(name),
-  "Only model-provider environment variables may be forwarded",
-);
-
 export const optionsSchema = z.object({
   project: projectSchema.optional(),
   image: z.string().min(1).default("vercel/sandbox/node:24"),
@@ -23,28 +18,25 @@ export const optionsSchema = z.object({
   timeoutMs: z.number().int().min(60_000).max(2_700_000).default(1_800_000),
   vcpus: z.union([z.literal(1), z.literal(2), z.literal(4)]).default(2),
   previewPorts: z.array(z.number().int().min(1024).max(65535).refine((port) => port !== SERVER_PORT)).max(14).default([]),
-  forwardEnv: z.array(forwardedName).default([]),
   remoteConfig: z.object({
-    model: z.string().optional(),
-    provider: z.record(z.string(), z.unknown()).optional(),
+    model: z.string().regex(/^vercel\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._:-]+$/).max(200).optional(),
   }).strict().default({}),
 }).strict();
 
 export type Options = z.infer<typeof optionsSchema>;
 
-export function remoteEnvironment(options: Options, inherited: Record<string, string | undefined>, host: NodeJS.ProcessEnv) {
-  const env: Record<string, string> = {};
-  for (const key of ["OPENCODE_AUTH_CONTENT", "OPENCODE_WORKSPACE_ID", "OPENCODE_EXPERIMENTAL_WORKSPACES"]) {
-    if (inherited[key]) env[key] = inherited[key];
-  }
-  for (const key of options.forwardEnv) {
-    if (!host[key]) throw new Error(`Missing model environment variable: ${key}`);
-    env[key] = host[key];
-  }
+export function remoteEnvironment(options: Options, workspaceID: string) {
+  const model = gatewayModel(options.remoteConfig.model);
   return {
-    ...env,
+    OPENCODE_WORKSPACE_ID: workspaceID,
+    OPENCODE_EXPERIMENTAL_WORKSPACES: "true",
+    OPENCODE_AUTH_CONTENT: JSON.stringify({ vercel: { type: "api", key: GATEWAY_PLACEHOLDER } }),
     OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(options.remoteConfig),
+    OPENCODE_DISABLE_AUTOUPDATE: "true",
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({
+      model, small_model: model, enabled_providers: ["vercel"],
+      provider: { vercel: { options: { apiKey: GATEWAY_PLACEHOLDER, baseURL: "https://ai-gateway.vercel.sh/v3/ai" } } },
+    }),
     OPENCODE_SERVER_USERNAME: "opencode",
   };
 }

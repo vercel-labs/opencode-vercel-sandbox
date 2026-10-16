@@ -4,7 +4,8 @@ This package is not published. `private: true` prevents accidental npm publicati
 
 ## 1. Review the repository
 
-- Approve both the automatic-tool boundary and the workspace credential-forwarding behavior.
+- Approve both the automatic-tool boundary and Gateway-only workspace credential brokering, including the refusal of legacy workspaces.
+- Verify provider-key absence from VM environment/files/commands, real Gateway tool calls, policy refresh before resume, and errors that never echo keys. Brokered calls can still incur charges.
 - Approve a license and add its text before public distribution.
 - Confirm the npm name and the Vercel-owned publisher. A registry 404 does not reserve the name.
 - Run CI and review the rendered README, setup instructions and packaged files.

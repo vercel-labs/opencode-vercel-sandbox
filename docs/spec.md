@@ -21,7 +21,7 @@ Workspace mode uses OpenCode's native remote-workspace adapter. OpenCode itself 
 | Stop/resume | Persistent files; restart the OpenCode server |
 | Removal | Stop only; retained filesystem can still be exported |
 | Preview | Configured additional ports; no automatic server detection |
-| Credentials | Sandbox auth stays local; all saved OpenCode provider auth and explicitly selected shell variables enter the VM |
+| Credentials | Sandbox auth stays local; one Gateway API key is brokered by the firewall, with a non-secret placeholder in the VM |
 
 ## Boundaries
 
@@ -37,13 +37,15 @@ Sandbox names derive from both project ID and workspace ID. The adapter does not
 
 1. Configure the workspace with its derived Sandbox name and remote directory.
 2. Capture committed source and verify local HEAD has not moved during capture.
-3. Create a persistent Sandbox with a bounded session and private server password.
+3. Resolve a host Gateway API key and explicit Gateway model; create a persistent Sandbox with its firewall policy, bounded session and private server password.
 4. Upload source, clone into the remote directory, install the pinned server and await health.
-5. Resolve the authenticated remote target on subsequent connections; restart after stop.
+5. Validate the local broker record and billing/model scope, reload the host key, update the policy without resuming, then resume and resolve the authenticated remote target.
 6. Export the current Git tree into a unique local branch when requested.
 7. Stop on workspace removal; retain the sandbox and latest snapshot.
 
-Creation errors retain the Sandbox and command logs for investigation. Removing the OpenCode workspace does not delete Vercel storage. Stored model credentials and Git history remain in persistent storage until its owner deletes it.
+Creation errors retain the Sandbox and command logs for investigation. Removing the OpenCode workspace does not delete Vercel storage. Old pre-brokering workspaces are refused and can still contain copied model credentials in retained files or snapshots; the upgrade does not scrub them. New workspaces never receive provider keys from inherited auth, forwarded environment variables, or arbitrary provider configuration. They still contain a separate server password and committed source history.
+
+The broker authenticates the configured model's POST inference request at the fixed Gateway endpoint, with a pinned Host header. Other networking remains available without injected credentials. This boundary protects provider keys, not budgets or data sent in authorized model requests. OAuth and subscription authentication are outside this version. Policy failures do not return a workspace connection. A host-side activation lock prevents concurrent initialization and reconnect operations.
 
 ## Acceptance
 
@@ -53,6 +55,8 @@ Creation errors retain the Sandbox and command logs for investigation. Removing 
 - Export tracked, untracked, deleted and binary files while preserving local changes and the index.
 - Stop, reconnect, restart the server and verify the edited file persists.
 - Fail closed on missing credentials, invalid options and failed command exit status.
+- Verify synthetic keys never enter VM inputs, state, connection metadata or errors, and policy refresh precedes resume.
+- Verify real Gateway streaming and tool calls with placeholder-only remote authentication, including stop/reconnect and legacy-workspace refusal.
 - Typecheck, build, package and independently review the final source.
 - Install globally and create a workspace through the real terminal `/warp` picker, with no project plugin configuration or exported control-plane token.
 - Preserve existing global settings; test reconnect through normal `opencode --session`, and export/stop using the saved login and linked repository.
