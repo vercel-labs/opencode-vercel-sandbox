@@ -1,0 +1,29 @@
+{
+  "name": "opencode-vercel-sandbox",
+  "version": "0.1.0-preview.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Automatic remote tools and persistent Vercel Sandbox workspaces for OpenCode",
+  "repository": {"type": "git", "url": "git+https://github.com/vercel-labs/opencode-vercel-sandbox.git"},
+  "homepage": "https://github.com/vercel-labs/opencode-vercel-sandbox#readme",
+  "bugs": {"url": "https://github.com/vercel-labs/opencode-vercel-sandbox/issues"},
+  "keywords": ["opencode", "vercel", "sandbox", "plugin"],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {".": "./dist/index.js", "./server": "./dist/index.js"},
+  "bin": {"opencode-vercel-sandbox": "./dist/cli.js"},
+  "files": ["dist", "README.md", "CONTRIBUTING.md", "docs/spec.md", "docs/terminal.md", "docs/workspace.md", "docs/releasing.md"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:package": "node scripts/check-package.mjs",
+    "check": "npm run typecheck && npm test",
+    "prepack": "npm run build"
+  },
+  "engines": {"node": ">=22", "opencode": "1.18.32"},
+  "dependencies": {"@vercel/sandbox": "3.5.0", "zod": "4.3.6"},
+  "devDependencies": {"@opencode-ai/plugin": "1.18.32", "@types/node": "^22.0.0", "tsx": "^4.20.0", "typescript": "^5.9.0"},
+  "peerDependencies": {"@opencode-ai/plugin": "1.18.32"}
+}

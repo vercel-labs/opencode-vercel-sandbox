@@ -1,0 +1,72 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import type { Sandbox } from "@vercel/sandbox";
+import { bundleSource, safeGit, returnBundle, synchronize } from "../src/automatic/git.js";
+import type { SessionRecord } from "../src/automatic/state.js";
+
+test("automatic Git return preserves dirty checkout and refuses checked-out/changed branches", async () => {
+  const root = await mkdtemp(join(tmpdir(), "oc-auto-git-"));
+  const local = join(root, "local");
+  const remote = join(root, "remote");
+  await safeGit(root, ["init", "-q", local]);
+  await writeFile(join(local, "file.txt"), "committed\n");
+  await writeFile(join(local, "deleted.txt"), "delete\n");
+  await writeFile(join(local, ".gitignore"), "ignored.txt\n");
+  await safeGit(local, ["add", "."]);
+  await safeGit(local, ["-c", "user.name=Fixture", "-c", "user.email=test@localhost", "commit", "-qm", "fixture"]);
+  const base = await safeGit(local, ["rev-parse", "HEAD"]);
+  await writeFile(join(local, "file.txt"), "staged\n");
+  await safeGit(local, ["add", "file.txt"]);
+  await writeFile(join(local, "file.txt"), "dirty\n");
+  await writeFile(join(local, "untracked.txt"), "local only\n");
+  const before = await safeGit(local, ["status", "--porcelain"]);
+  const index = await readFile(join(local, ".git/index"));
+  const source = await bundleSource(local);
+  const sourcePath = join(root, "source.bundle");
+  await writeFile(sourcePath, source.content);
+  await safeGit(root, ["clone", "-q", sourcePath, remote]);
+  assert.equal(await readFile(join(remote, "file.txt"), "utf8"), "committed\n");
+  await assert.rejects(readFile(join(remote, "untracked.txt")), { code: "ENOENT" });
+  await writeFile(join(remote, "file.txt"), "remote\n");
+  await writeFile(join(remote, "binary.dat"), Buffer.from([0, 1, 255]));
+  await writeFile(join(remote, "ignored.txt"), "ignored\n");
+  await safeGit(remote, ["rm", "deleted.txt"]);
+  await safeGit(remote, ["add", "-A"]);
+  await safeGit(remote, ["-c", "user.name=Fixture", "-c", "user.email=test@localhost", "commit", "-qm", "remote edit"]);
+  const reference = "refs/opencode-return/test";
+  await safeGit(remote, ["update-ref", reference, "HEAD"]);
+  const returnPath = join(root, "return.bundle");
+  await safeGit(remote, ["bundle", "create", returnPath, reference]);
+  const bytes = await readFile(returnPath);
+  const record: SessionRecord = { version: 1, sessionID: "one", worktree: local, scope: "test", name: `oc-auto-${"a".repeat(32)}`, phase: "ready", base, branch: `vercel-sandbox/${"a".repeat(32)}`, returned: null, sync: "pending" };
+  const returned = await returnBundle(local, record, bytes, reference);
+  assert.equal(await safeGit(local, ["show", `${record.branch}:file.txt`]), "remote");
+  assert.equal(await safeGit(local, ["show", `${record.branch}:binary.dat`]), "\u0000\u0001�");
+  await assert.rejects(safeGit(local, ["show", `${record.branch}:deleted.txt`]));
+  await assert.rejects(safeGit(local, ["show", `${record.branch}:ignored.txt`]));
+  assert.equal(await safeGit(local, ["rev-parse", "HEAD"]), base);
+  assert.equal(await readFile(join(local, "file.txt"), "utf8"), "dirty\n");
+  assert.equal(await safeGit(local, ["status", "--porcelain"]), before);
+  assert.deepEqual(await readFile(join(local, ".git/index")), index);
+  await assert.rejects(returnBundle(local, record, bytes, reference), /changed outside/);
+  record.returned = returned;
+  assert.equal(await returnBundle(local, record, bytes, reference), returned);
+  let capturedBundle = "";
+  const cleanupFailure = {
+    async runCommand(options: { cmd: string; args: string[] }) {
+      if (options.cmd === "rm") throw new Error("cleanup transport rejected");
+      const remoteRef = options.args[6]!;
+      capturedBundle = join(root, "cleanup-failure.bundle");
+      await safeGit(remote, ["update-ref", remoteRef, "HEAD"]);
+      await safeGit(remote, ["bundle", "create", capturedBundle, remoteRef]);
+      return { exitCode: 0 };
+    },
+    async readFileToBuffer() { return readFile(capturedBundle); },
+  } as unknown as Sandbox;
+  assert.equal(await synchronize(cleanupFailure, local, record), returned, "cleanup failure must not hide a committed return");
+  await safeGit(local, ["worktree", "add", "--quiet", join(root, "checked"), record.branch]);
+  await assert.rejects(returnBundle(local, record, bytes, reference), /checked out/);
+});
